@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from google.adk.agents.llm_agent import Agent
+from google.adk.apps.app import App
+from google.adk.apps.app import ResumabilityConfig
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai.types import Part
@@ -242,3 +244,150 @@ def test_async_function_with_none_response():
 
   # At the end, function_called should still be 1.
   assert function_called == 1
+
+
+def _make_resumable_runner(agent: Agent) -> testing_utils.InMemoryRunner:
+  """Returns a runner that has resumability enabled."""
+  app = App(
+      name='test_app',
+      root_agent=agent,
+      resumability_config=ResumabilityConfig(is_resumable=True),
+  )
+  return testing_utils.InMemoryRunner(app=app)
+
+
+def test_callable_is_long_running_pauses_when_true():
+  """Callable is_long_running=True → execution pauses; model_response_event has long_running_tool_ids."""
+  responses = [
+      Part.from_function_call(name='submit_order', args={'item': 'book'}),
+      'confirmed',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  def submit_order(item: str) -> dict:
+    return {'status': 'pending_confirmation', 'item': item}
+
+  def needs_pause(result: dict) -> bool:
+    return result.get('status') == 'pending_confirmation'
+
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[
+          LongRunningFunctionTool(func=submit_order, is_long_running=needs_pause)
+      ],
+  )
+  runner = _make_resumable_runner(agent)
+  events = runner.run('order book')
+
+  # Only the first LLM call should have been made; the invocation paused
+  # before making a second call because the callable returned True.
+  assert len(mock_model.requests) == 1
+
+  # The model-response event (function call) must carry long_running_tool_ids.
+  fc_event = events[0]
+  assert fc_event.long_running_tool_ids, (
+      'model_response_event must have long_running_tool_ids set when callable'
+      ' is_long_running returns True'
+  )
+
+  # The events consist of the function-call event and the function-response
+  # event (tool executed and returned a result).
+  assert testing_utils.simplify_events(events) == [
+      (
+          'root_agent',
+          Part.from_function_call(name='submit_order', args={'item': 'book'}),
+      ),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='submit_order',
+              response={'status': 'pending_confirmation', 'item': 'book'},
+          ),
+      ),
+  ]
+
+
+def test_callable_is_long_running_no_pause_when_false():
+  """Callable is_long_running returning False → no pause; LLM receives error."""
+  responses = [
+      Part.from_function_call(name='validate_input', args={'value': -1}),
+      'Please provide a positive number.',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  def validate_input(value: int) -> dict:
+    if value < 0:
+      return {'error': 'value must be non-negative'}
+    return {'status': 'ok', 'value': value}
+
+  def needs_pause(result: dict) -> bool:
+    # Only pause on success; propagate errors back to the LLM immediately.
+    return result.get('status') == 'ok'
+
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[
+          LongRunningFunctionTool(
+              func=validate_input, is_long_running=needs_pause
+          )
+      ],
+  )
+  runner = _make_resumable_runner(agent)
+  events = runner.run('check -1')
+
+  # Both LLM calls must happen: one for the function call and one after the
+  # LLM sees the error response (no pause occurred).
+  assert len(mock_model.requests) == 2
+
+  # The model-response event must NOT have long_running_tool_ids because the
+  # callable returned False for this result.
+  fc_event = events[0]
+  assert not fc_event.long_running_tool_ids, (
+      'model_response_event must NOT have long_running_tool_ids when callable'
+      ' is_long_running returns False'
+  )
+
+  # LLM received the error and produced a text response.
+  assert testing_utils.simplify_events(events) == [
+      (
+          'root_agent',
+          Part.from_function_call(
+              name='validate_input', args={'value': -1}
+          ),
+      ),
+      (
+          'root_agent',
+          Part.from_function_response(
+              name='validate_input',
+              response={'error': 'value must be non-negative'},
+          ),
+      ),
+      ('root_agent', 'Please provide a positive number.'),
+  ]
+
+
+def test_callable_is_long_running_backward_compat():
+  """Boolean is_long_running=True still works the same as before."""
+  responses = [
+      Part.from_function_call(name='increase_by_one', args={'x': 1}),
+      'response1',
+  ]
+  mock_model = testing_utils.MockModel.create(responses=responses)
+
+  def increase_by_one(x: int, tool_context: ToolContext) -> int:
+    return {'status': 'pending'}
+
+  agent = Agent(
+      name='root_agent',
+      model=mock_model,
+      tools=[LongRunningFunctionTool(func=increase_by_one)],
+  )
+  runner = _make_resumable_runner(agent)
+  events = runner.run('test1')
+
+  # With boolean True and resumability enabled, the invocation pauses after
+  # the first LLM call (no second LLM call in this turn).
+  assert len(mock_model.requests) == 1
+  assert events[0].long_running_tool_ids

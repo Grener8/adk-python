@@ -1065,6 +1065,23 @@ class BaseLlmFlow(ABC):
     if function_response_event := await functions.handle_function_calls_async(
         invocation_context, function_call_event, llm_request.tools_dict
     ):
+      # For callable is_long_running tools, the pause decision is deferred
+      # until after execution.  The individual function_response_event carries
+      # any long_running_tool_ids that were determined post-execution; we copy
+      # them to the model-response (function_call_event) so that
+      # should_pause_invocation sees them on the event that also contains the
+      # matching function calls.
+      if function_response_event.long_running_tool_ids:
+        if function_call_event.long_running_tool_ids:
+          function_call_event.long_running_tool_ids = (
+              function_call_event.long_running_tool_ids
+              | function_response_event.long_running_tool_ids
+          )
+        else:
+          function_call_event.long_running_tool_ids = set(
+              function_response_event.long_running_tool_ids
+          )
+
       auth_event = functions.generate_auth_event(
           invocation_context, function_response_event
       )

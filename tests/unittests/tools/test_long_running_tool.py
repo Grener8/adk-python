@@ -64,6 +64,26 @@ class TestLongRunningFunctionTool:
     tool = LongRunningFunctionTool(sample_long_running_function)
     assert tool.is_long_running is True
 
+  def test_is_long_running_callable(self):
+    """Test that is_long_running can be set to a callable."""
+
+    def should_pause(result) -> bool:
+      return result.get("status") == "pending"
+
+    tool = LongRunningFunctionTool(
+        sample_long_running_function, is_long_running=should_pause
+    )
+    assert callable(tool.is_long_running)
+    assert tool.is_long_running({"status": "pending"}) is True
+    assert tool.is_long_running({"status": "error"}) is False
+
+  def test_is_long_running_false(self):
+    """Test that is_long_running can be explicitly set to False."""
+    tool = LongRunningFunctionTool(
+        sample_long_running_function, is_long_running=False
+    )
+    assert tool.is_long_running is False
+
   def test_get_declaration_with_description(self):
     """Test that _get_declaration adds warning message to existing description."""
     tool = LongRunningFunctionTool(sample_long_running_function)

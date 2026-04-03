@@ -222,7 +222,9 @@ def get_long_running_function_calls(
   for function_call in function_calls:
     if (
         function_call.name in tools_dict
-        and tools_dict[function_call.name].is_long_running
+        # Only mark as long-running pre-execution when is_long_running is the
+        # boolean True.  Callable values are evaluated post-execution instead.
+        and tools_dict[function_call.name].is_long_running is True
     ):
       long_running_tool_ids.add(function_call.id)
 
@@ -569,7 +571,7 @@ async def _execute_single_function_call_async(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
+    if tool.is_long_running is True:
       # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
@@ -583,6 +585,16 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
+
+    # For callable is_long_running, evaluate the result now to decide whether
+    # to pause.  If the callable returns True, tag the function_response_event
+    # with the function call id so that the caller can propagate the pause
+    # decision back to the model-response event.
+    if callable(tool.is_long_running) and tool.is_long_running(
+        function_response
+    ):
+      function_response_event.long_running_tool_ids = {function_call.id}
+
     return function_response_event
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
@@ -1208,6 +1220,15 @@ def merge_parallel_function_response_events(
       content=types.Content(role='user', parts=merged_parts),
       actions=merged_actions,  # Aggregated from all parallel events
   )
+
+  # Merge long_running_tool_ids from all parallel events (callable tools set
+  # this post-execution to signal a deferred pause).
+  merged_long_running_ids: set[str] = set()
+  for event in function_response_events:
+    if event.long_running_tool_ids:
+      merged_long_running_ids |= event.long_running_tool_ids
+  if merged_long_running_ids:
+    merged_event.long_running_tool_ids = merged_long_running_ids
 
   # Use the base_event as the timestamp
   merged_event.timestamp = base_event.timestamp
