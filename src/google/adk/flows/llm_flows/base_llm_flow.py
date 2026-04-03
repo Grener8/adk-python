@@ -858,9 +858,7 @@ class BaseLlmFlow(ABC):
             # chunks of the same streaming response reuse the same IDs.
             if event.get_function_calls():
               last_fc_ids = {
-                  fc.name: fc.id
-                  for fc in event.get_function_calls()
-                  if fc.id
+                  fc.name: fc.id for fc in event.get_function_calls() if fc.id
               }
             # Update the mutable event id to avoid conflict
             model_response_event.id = Event.new_id()

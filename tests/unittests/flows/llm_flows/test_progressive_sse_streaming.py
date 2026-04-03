@@ -894,3 +894,124 @@ def test_partial_function_calls_not_executed_in_none_streaming_mode():
   assert (
       len(function_response_events) == 1
   ), f"Expected 1 function response event, got {len(function_response_events)}"
+
+
+class _StableIdStreamingMockModel(BaseLlm):
+  """Mock model that yields a partial then final chunk for one function call.
+
+  Simulates SSE streaming where the same function call appears first as a
+  partial chunk (without an ID) and then as the final chunk (also without an
+  ID). The framework must assign a stable ID to both chunks.
+  """
+
+  model: str = "stable-id-streaming-mock"
+
+  @classmethod
+  def supported_models(cls) -> list[str]:
+    return ["stable-id-streaming-mock"]
+
+  async def generate_content_async(
+      self, llm_request: LlmRequest, stream: bool = False
+  ) -> AsyncGenerator[LlmResponse, None]:
+    for content in llm_request.contents:
+      for part in content.parts or []:
+        if part.function_response:
+          # Follow-up call after function execution - return text response.
+          yield LlmResponse(
+              content=types.Content(
+                  role="model",
+                  parts=[types.Part.from_text(text="Done.")],
+              ),
+              partial=False,
+          )
+          return
+
+    # First call: yield partial chunk then final chunk for the same FC.
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="get_weather", args={"location": "London"}
+                )
+            ],
+        ),
+        partial=True,
+    )
+    yield LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_function_call(
+                    name="get_weather", args={"location": "London"}
+                )
+            ],
+        ),
+        partial=False,
+        finish_reason=types.FinishReason.STOP,
+    )
+
+
+def test_streaming_function_call_id_stable_across_chunks():
+  """Function call IDs must be identical in partial and final streaming events.
+
+  In SSE streaming mode the framework yields a partial event for each
+  chunk and a final event when the stream completes. A client that receives
+  the partial event uses its function_call.id to match results later. If the
+  final (session-stored) event has a different ID, the lookup fails. This
+  test verifies that the fix assigns the ID once (on the first chunk) and
+  reuses it for all subsequent chunks of the same logical LLM response.
+  """
+  mock_model = _StableIdStreamingMockModel()
+
+  agent = Agent(
+      name="weather_agent",
+      model=mock_model,
+      tools=[get_weather],
+  )
+
+  run_config = RunConfig(streaming_mode=StreamingMode.SSE)
+  runner = InMemoryRunner(agent=agent)
+
+  session = runner.session_service.create_session_sync(
+      app_name=runner.app_name, user_id="test_user"
+  )
+
+  events = list(
+      runner.run(
+          user_id="test_user",
+          session_id=session.id,
+          new_message=types.Content(
+              role="user",
+              parts=[
+                  types.Part.from_text(text="What is the weather in London?")
+              ],
+          ),
+          run_config=run_config,
+      )
+  )
+
+  # Collect all function call IDs from partial events and the final event.
+  partial_fc_ids = set()
+  final_fc_ids = set()
+  for event in events:
+    if not event.get_function_calls():
+      continue
+    ids = {fc.id for fc in event.get_function_calls() if fc.id}
+    if event.partial:
+      partial_fc_ids.update(ids)
+    else:
+      final_fc_ids.update(ids)
+
+  # Both partial and final events must have been seen.
+  assert partial_fc_ids, "No partial events with function calls were found"
+  assert final_fc_ids, "No final events with function calls were found"
+
+  # The IDs must be identical across all chunks of the same LLM response.
+  assert partial_fc_ids == final_fc_ids, (
+      "Function call IDs differ between partial and final events: "
+      f"partial={partial_fc_ids}, final={final_fc_ids}"
+  )
+
+  # All IDs must be non-empty strings.
+  assert all(id_ for id_ in partial_fc_ids | final_fc_ids)

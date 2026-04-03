@@ -31,6 +31,7 @@ from google.adk.events.event import Event
 from google.adk.tools.exit_loop_tool import exit_loop
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
 
@@ -526,3 +527,131 @@ class TestPauseInvocationWithWithTransferLoop(BasePauseInvocationTest):
             ),
         ),
     ]
+
+
+class TestPauseInvocationWithMultipleLongRunningTools(BasePauseInvocationTest):
+  """Tests pausing invocation when one agent makes multiple long-running calls."""
+
+  @pytest.fixture
+  def agent(self) -> BaseAgent:
+    """Provides an LlmAgent that issues two long-running calls at once."""
+
+    def tool_a() -> str:
+      return "result_a"
+
+    def tool_b() -> str:
+      return "result_b"
+
+    return LlmAgent(
+        name="root_agent",
+        model=self.mock_model(
+            responses=[[
+                Part.from_function_call(name="tool_a", args={}),
+                Part.from_function_call(name="tool_b", args={}),
+            ]]
+        ),
+        tools=[
+            LongRunningFunctionTool(func=tool_a),
+            LongRunningFunctionTool(func=tool_b),
+        ],
+    )
+
+  @pytest.mark.asyncio
+  def test_pause_on_multiple_long_running_tool_calls(
+      self,
+      runner: testing_utils.InMemoryRunner,
+  ):
+    """Tests that an agent pauses when it issues multiple long-running calls.
+
+    Even though both tools execute and produce responses immediately, the
+    invocation must pause because the long-running tool IDs from the function
+    call event have not yet been resolved by user-provided responses.
+    """
+    events = runner.run("test")
+
+    # The function call event should have both calls and long_running_tool_ids.
+    fc_event = next(e for e in events if e.get_function_calls())
+    fc_names = {fc.name for fc in fc_event.get_function_calls()}
+    assert fc_names == {"tool_a", "tool_b"}
+    assert fc_event.long_running_tool_ids is not None
+    assert len(fc_event.long_running_tool_ids) == 2
+
+    # Agent must not have reached end-of-agent; it should remain paused.
+    simplified = testing_utils.simplify_resumable_app_events(events)
+    assert ("root_agent", END_OF_AGENT) not in simplified
+
+
+class TestMultiStepResumableFlow(BasePauseInvocationTest):
+  """Tests multi-step resumable flows with more than two events between pauses."""
+
+  @pytest.fixture
+  def agent(self) -> BaseAgent:
+    """Agent that has a long-running call followed by several text responses."""
+    return LlmAgent(
+        name="root_agent",
+        model=self.mock_model(
+            responses=[
+                Part.from_function_call(name="test_tool", args={}),
+                # These two text responses come AFTER the pending function
+                # response during resume runs (different invocations).
+                "intermediate response",
+                "final response",
+            ]
+        ),
+        tools=[LongRunningFunctionTool(func=test_tool)],
+    )
+
+  @pytest.mark.asyncio
+  def test_pause_after_long_running_call(
+      self,
+      runner: testing_utils.InMemoryRunner,
+  ):
+    """First run: agent issues the long-running call and pauses."""
+    events = testing_utils.simplify_resumable_app_events(runner.run("test"))
+    assert (
+        "root_agent",
+        Part.from_function_call(name="test_tool", args={}),
+    ) in events
+    assert ("root_agent", END_OF_AGENT) not in events
+
+  @pytest.mark.asyncio
+  def test_resume_after_user_provides_response(
+      self,
+      runner: testing_utils.InMemoryRunner,
+  ):
+    """Second run: agent resumes after the user provides the function response.
+
+    Specifically verifies that the pause check correctly handles the case
+    where there are more than two events in the current invocation's history
+    before and after the function call event.
+    """
+    # First run to trigger the pause.
+    first_run_events = runner.run("test")
+    fc_event = first_run_events[0]
+    fc_id = fc_event.content.parts[0].function_call.id
+
+    # Second run: user provides a function response with the matching ID.
+    user_response = testing_utils.UserContent(
+        Part(
+            function_response=FunctionResponse(
+                id=fc_id,
+                name="test_tool",
+                response={"result": "user result"},
+            )
+        )
+    )
+    # Resume the same invocation (same invocation_id) so that the function
+    # call event and user response are both in the current-invocation events.
+    resume_events = asyncio.run(
+        runner.run_async(
+            invocation_id=fc_event.invocation_id,
+            new_message=user_response,
+        )
+    )
+    resume_simplified = testing_utils.simplify_resumable_app_events(
+        resume_events
+    )
+    # After providing the matching function response, the LLM is called and
+    # produces text. The agent should reach end-of-agent.
+    assert ("root_agent", "intermediate response") in resume_simplified
+    assert ("root_agent", END_OF_AGENT) in resume_simplified

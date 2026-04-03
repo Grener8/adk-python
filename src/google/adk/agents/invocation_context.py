@@ -419,7 +419,7 @@ class InvocationContext(BaseModel):
     user_response_ids = {
         fr.id
         for evt in events
-        if evt.author == 'user'
+        if evt.author == "user"
         for fr in evt.get_function_responses()
         if fr.id
     }
