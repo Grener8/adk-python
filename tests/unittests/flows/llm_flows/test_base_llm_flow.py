@@ -20,6 +20,9 @@ from unittest.mock import AsyncMock
 from google.adk.agents.llm_agent import Agent
 from google.adk.events.event import Event
 from google.adk.flows.llm_flows.base_llm_flow import _handle_after_model_callback
+from google.adk.flows.llm_flows.base_llm_flow import (
+    _finalize_model_response_event,
+)
 from google.adk.flows.llm_flows.base_llm_flow import BaseLlmFlow
 from google.adk.models.google_llm import Gemini
 from google.adk.models.llm_request import LlmRequest
@@ -484,3 +487,41 @@ async def test_handle_after_model_callback_caches_canonical_tools():
     assert result1.grounding_metadata == {'foo': 'bar'}
     assert result2.grounding_metadata == {'foo': 'bar'}
     assert result3.grounding_metadata == {'foo': 'bar'}
+
+
+def test_finalize_model_response_event_preserves_streaming_function_call_ids():
+  """Tests final event keeps function call ids from prior streamed partial."""
+  previous_event = Event(
+      invocation_id='inv_1',
+      author='test_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(name='tool_a', args={'x': 1}),
+              types.Part.from_function_call(name='tool_b', args={'y': 2}),
+          ],
+      ),
+      partial=True,
+  )
+  previous_event.content.parts[0].function_call.id = 'stable_id_1'
+  previous_event.content.parts[1].function_call.id = 'stable_id_2'
+
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(name='tool_a', args={'x': 1}),
+              types.Part.from_function_call(name='tool_b', args={'y': 2}),
+          ],
+      ),
+      partial=False,
+  )
+
+  finalized_event = _finalize_model_response_event(
+      LlmRequest(), llm_response, previous_event
+  )
+  function_calls = finalized_event.get_function_calls()
+
+  assert len(function_calls) == 2
+  assert function_calls[0].id == 'stable_id_1'
+  assert function_calls[1].id == 'stable_id_2'

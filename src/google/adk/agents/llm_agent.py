@@ -496,7 +496,7 @@ class LlmAgent(BaseAgent):
 
     if ctx.is_resumable:
       events = ctx._get_events(current_invocation=True, current_branch=True)
-      if events and any(ctx.should_pause_invocation(e) for e in events[-2:]):
+      if ctx.has_unresolved_long_running_tool_calls(events):
         return
       # Only yield an end state if the last event is no longer a long-running
       # tool call.

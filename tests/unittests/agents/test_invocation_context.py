@@ -210,6 +210,69 @@ class TestInvocationContextWithAppResumablity:
         nonpausable_event
     )
 
+  def test_has_unresolved_long_running_tool_calls_resolved_by_response(self):
+    """Tests unresolved long-running calls are cleared by matching responses."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+
+    fc = Part.from_function_call(name='some_tool', args={})
+    fc.function_call.id = 'tool_call_id_1'
+    function_call_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc]),
+        long_running_tool_ids={'tool_call_id_1'},
+    )
+    text_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([Part.from_text(text='intermediate')]),
+    )
+    fr = Part.from_function_response(name='some_tool', response={'result': 'ok'})
+    fr.function_response.id = 'tool_call_id_1'
+    function_response_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[fr]),
+    )
+
+    assert invocation_context.has_unresolved_long_running_tool_calls(
+        [function_call_event, text_event]
+    )
+    assert not invocation_context.has_unresolved_long_running_tool_calls(
+        [function_call_event, text_event, function_response_event]
+    )
+
+  def test_has_unresolved_long_running_tool_calls_with_multiple_ids(self):
+    """Tests unresolved state remains when only a subset of ids are resolved."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+
+    fc_1 = Part.from_function_call(name='tool_a', args={})
+    fc_1.function_call.id = 'tool_call_id_1'
+    fc_2 = Part.from_function_call(name='tool_b', args={})
+    fc_2.function_call.id = 'tool_call_id_2'
+    function_call_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc_1, fc_2]),
+        long_running_tool_ids={'tool_call_id_1', 'tool_call_id_2'},
+    )
+
+    fr = Part.from_function_response(name='tool_a', response={'result': 'ok'})
+    fr.function_response.id = 'tool_call_id_1'
+    function_response_event = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[fr]),
+    )
+
+    assert invocation_context.has_unresolved_long_running_tool_calls(
+        [function_call_event, function_response_event]
+    )
+
   def test_is_resumable_true(self):
     """Tests that is_resumable is True when resumability is enabled."""
     invocation_context = self._create_test_invocation_context(

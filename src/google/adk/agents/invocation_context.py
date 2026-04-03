@@ -396,6 +396,46 @@ class InvocationContext(BaseModel):
 
     return False
 
+  def has_unresolved_long_running_tool_calls(
+      self, events: Optional[list[Event]] = None
+  ) -> bool:
+    """Returns whether the event history still has unresolved long-running calls.
+
+    A long-running call is unresolved if its function call id appears in any
+    event.long_running_tool_ids but no function response in the same event
+    history has a matching id.
+
+    Args:
+      events: Optional pre-filtered event list. If omitted, current invocation
+        and current branch events are used.
+
+    Returns:
+      Whether unresolved long-running tool calls exist.
+    """
+    if not self.is_resumable:
+      return False
+
+    events = events or self._get_events(
+        current_invocation=True, current_branch=True
+    )
+    if not events:
+      return False
+
+    function_response_ids = {
+        function_response.id
+        for event in events
+        for function_response in event.get_function_responses()
+        if function_response.id
+    }
+
+    for event in events:
+      if not event.long_running_tool_ids:
+        continue
+      for tool_id in event.long_running_tool_ids:
+        if tool_id and tool_id not in function_response_ids:
+          return True
+    return False
+
   # TODO: Move this method from invocation_context to a dedicated module.
   def _find_matching_function_call(
       self, function_response_event: Event

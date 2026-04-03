@@ -100,6 +100,13 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
+      previous_function_calls = model_response_event.get_function_calls()
+      if previous_function_calls:
+        for previous_call, current_call in zip(
+            previous_function_calls, function_calls
+        ):
+          if previous_call.id and not current_call.id:
+            current_call.id = previous_call.id
       functions.populate_client_function_call_id(finalized_event)
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
@@ -796,21 +803,9 @@ class BaseLlmFlow(ABC):
     )
 
     # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
-    # before, and its branch hasn't been resumed yet.
-    if (
-        invocation_context.is_resumable
-        and events
-        and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
-        and (
-            invocation_context.should_pause_invocation(events[-1])
-            or invocation_context.should_pause_invocation(events[-2])
-        )
-    ):
+    # If unresolved long running tool call ids still exist in this invocation
+    # branch, keep the invocation paused.
+    if invocation_context.has_unresolved_long_running_tool_calls(events):
       return
 
     if (
