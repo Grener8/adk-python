@@ -246,7 +246,7 @@ def test_async_function_with_none_response():
   assert function_called == 1
 
 
-def test_callable_long_running_pauses_only_for_selected_results():
+def test_callable_long_running_conditional_pause():
   responses = [
       Part.from_function_call(name='submit', args={'attempt': 1}),
       Part.from_function_call(name='submit', args={'attempt': 2}),

@@ -232,7 +232,7 @@ def get_long_running_function_calls(
   return long_running_tool_ids
 
 
-class _FunctionCallExecutionResult(NamedTuple):
+class _ToolExecutionResult(NamedTuple):
   """Result of one function call execution.
 
   Attributes:
@@ -472,7 +472,7 @@ async def _execute_single_function_call_async(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     tool_confirmation: Optional[ToolConfirmation] = None,
-) -> _FunctionCallExecutionResult:
+) -> _ToolExecutionResult:
   """Execute a single function call with thread safety for state modifications."""
 
   async def _run_on_tool_error_callbacks(
@@ -530,7 +530,7 @@ async def _execute_single_function_call_async(
         error=tool_error,
     )
     if error_response is not None:
-      return _FunctionCallExecutionResult(
+      return _ToolExecutionResult(
           event=__build_response_event(
               tool, error_response, tool_context, invocation_context
           ),
@@ -618,7 +618,7 @@ async def _execute_single_function_call_async(
       # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
-        return _FunctionCallExecutionResult(
+        return _ToolExecutionResult(
             event=None,
             should_pause=True,
             function_call_id=function_call.id,
@@ -632,7 +632,7 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    return _FunctionCallExecutionResult(
+    return _ToolExecutionResult(
         event=function_response_event,
         should_pause=should_pause,
         function_call_id=function_call.id,
@@ -730,7 +730,7 @@ async def _execute_single_function_call_live(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     streaming_lock: asyncio.Lock,
-) -> _FunctionCallExecutionResult:
+) -> _ToolExecutionResult:
   """Execute a single function call for live mode with thread safety."""
 
   async def _run_on_tool_error_callbacks(
@@ -786,7 +786,7 @@ async def _execute_single_function_call_live(
         error=tool_error,
     )
     if error_response is not None:
-      return _FunctionCallExecutionResult(
+      return _ToolExecutionResult(
           event=__build_response_event(
               tool, error_response, tool_context, invocation_context
           ),
@@ -882,7 +882,7 @@ async def _execute_single_function_call_live(
     if should_pause:
       # Allow async function to return None to not provide function response.
       if not function_response:
-        return _FunctionCallExecutionResult(
+        return _ToolExecutionResult(
             event=None,
             should_pause=True,
             function_call_id=function_call.id,
@@ -896,7 +896,7 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    return _FunctionCallExecutionResult(
+    return _ToolExecutionResult(
         event=function_response_event,
         should_pause=should_pause,
         function_call_id=function_call.id,
