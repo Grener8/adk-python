@@ -1014,4 +1014,7 @@ def test_streaming_function_call_id_stable_across_chunks():
   )
 
   # All IDs must be non-empty strings.
-  assert all(id_ for id_ in partial_fc_ids | final_fc_ids)
+  all_ids = partial_fc_ids | final_fc_ids
+  assert all(id_ for id_ in all_ids), (
+      f"Found empty function call ID(s) in {all_ids}"
+  )

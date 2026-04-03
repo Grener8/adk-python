@@ -107,7 +107,7 @@ def _finalize_model_response_event(
       # Restore IDs from prior streaming chunks to keep them stable.
       if existing_fc_ids:
         for fc in function_calls:
-          if fc.name in existing_fc_ids and not fc.id:
+          if fc.name in existing_fc_ids:
             fc.id = existing_fc_ids[fc.name]
       functions.populate_client_function_call_id(finalized_event)
       finalized_event.long_running_tool_ids = (

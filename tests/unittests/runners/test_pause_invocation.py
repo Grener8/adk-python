@@ -627,7 +627,7 @@ class TestMultiStepResumableFlow(BasePauseInvocationTest):
     """
     # First run to trigger the pause.
     first_run_events = runner.run("test")
-    fc_event = first_run_events[0]
+    fc_event = next(e for e in first_run_events if e.get_function_calls())
     fc_id = fc_event.content.parts[0].function_call.id
 
     # Second run: user provides a function response with the matching ID.
