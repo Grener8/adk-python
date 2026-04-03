@@ -102,6 +102,13 @@ def _finalize_model_response_event(
     if function_calls:
       previous_function_calls = model_response_event.get_function_calls()
       if previous_function_calls:
+        if len(previous_function_calls) != len(function_calls):
+          logger.warning(
+              'Mismatched function call counts between previous and current '
+              'streamed events: previous=%d current=%d',
+              len(previous_function_calls),
+              len(function_calls),
+          )
         for previous_call, current_call in zip(
             previous_function_calls, function_calls
         ):

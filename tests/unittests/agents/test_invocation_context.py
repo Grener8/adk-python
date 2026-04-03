@@ -210,7 +210,7 @@ class TestInvocationContextWithAppResumablity:
         nonpausable_event
     )
 
-  def test_has_unresolved_long_running_tool_calls_resolved_by_response(self):
+  def test_long_running_calls_resolved_by_response(self):
     """Tests unresolved long-running calls are cleared by matching responses."""
     invocation_context = self._create_test_invocation_context(
         ResumabilityConfig(is_resumable=True)
@@ -244,7 +244,7 @@ class TestInvocationContextWithAppResumablity:
         [function_call_event, text_event, function_response_event]
     )
 
-  def test_has_unresolved_long_running_tool_calls_with_multiple_ids(self):
+  def test_long_running_calls_partially_resolved(self):
     """Tests unresolved state remains when only a subset of ids are resolved."""
     invocation_context = self._create_test_invocation_context(
         ResumabilityConfig(is_resumable=True)
