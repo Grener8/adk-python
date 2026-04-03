@@ -52,7 +52,7 @@ class BaseTool(ABC):
   description: str
   """The description of the tool."""
 
-  is_long_running: bool = False
+  is_long_running: bool | Callable[[Any], bool] = False
   """Whether the tool is a long running operation, which typically returns a
   resource id first and finishes the operation later."""
 
@@ -70,7 +70,7 @@ class BaseTool(ABC):
       *,
       name,
       description,
-      is_long_running: bool = False,
+      is_long_running: bool | Callable[[Any], bool] = False,
       custom_metadata: Optional[dict[str, Any]] = None,
   ):
     self.name = name

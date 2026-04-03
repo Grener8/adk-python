@@ -64,6 +64,14 @@ class TestLongRunningFunctionTool:
     tool = LongRunningFunctionTool(sample_long_running_function)
     assert tool.is_long_running is True
 
+  def test_is_long_running_callable(self):
+    """Test that is_long_running supports callable predicates."""
+    predicate = lambda result: result == {"status": "pending"}
+    tool = LongRunningFunctionTool(
+        sample_long_running_function, is_long_running=predicate
+    )
+    assert tool.is_long_running is predicate
+
   def test_get_declaration_with_description(self):
     """Test that _get_declaration adds warning message to existing description."""
     tool = LongRunningFunctionTool(sample_long_running_function)

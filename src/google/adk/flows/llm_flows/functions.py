@@ -29,6 +29,7 @@ from typing import Any
 from typing import AsyncGenerator
 from typing import cast
 from typing import Dict
+from typing import NamedTuple
 from typing import Optional
 from typing import TYPE_CHECKING
 
@@ -218,15 +219,30 @@ def get_long_running_function_calls(
     function_calls: list[types.FunctionCall],
     tools_dict: dict[str, BaseTool],
 ) -> set[str]:
+  """Returns function call IDs with statically-configured long-running tools."""
   long_running_tool_ids = set()
   for function_call in function_calls:
     if (
         function_call.name in tools_dict
+        and isinstance(tools_dict[function_call.name].is_long_running, bool)
         and tools_dict[function_call.name].is_long_running
     ):
       long_running_tool_ids.add(function_call.id)
 
   return long_running_tool_ids
+
+
+class _FunctionCallExecutionResult(NamedTuple):
+  event: Optional[Event]
+  should_pause: bool
+  function_call_id: str
+
+
+def _should_pause_after_execution(tool: BaseTool, function_result: Any) -> bool:
+  """Returns whether execution should pause for this tool call result."""
+  if callable(tool.is_long_running):
+    return bool(tool.is_long_running(function_result))
+  return bool(tool.is_long_running)
 
 
 def build_auth_request_event(
@@ -361,6 +377,7 @@ async def handle_function_calls_async(
       tools_dict,
       filters,
       tool_confirmation_dict,
+      function_call_event,
   )
 
 
@@ -370,6 +387,7 @@ async def handle_function_call_list_async(
     tools_dict: dict[str, BaseTool],
     filters: Optional[set[str]] = None,
     tool_confirmation_dict: Optional[dict[str, ToolConfirmation]] = None,
+    function_call_event: Optional[Event] = None,
 ) -> Optional[Event]:
   """Calls the functions and returns the function response event."""
   from ...agents.llm_agent import LlmAgent
@@ -401,11 +419,22 @@ async def handle_function_call_list_async(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  execution_results = await asyncio.gather(*tasks)
+
+  long_running_tool_ids = {
+      result.function_call_id
+      for result in execution_results
+      if result.should_pause
+  }
+
+  if function_call_event and long_running_tool_ids:
+    if function_call_event.long_running_tool_ids is None:
+      function_call_event.long_running_tool_ids = set()
+    function_call_event.long_running_tool_ids.update(long_running_tool_ids)
 
   # Filter out None results
   function_response_events = [
-      event for event in function_response_events if event is not None
+      result.event for result in execution_results if result.event is not None
   ]
 
   if not function_response_events:
@@ -433,7 +462,7 @@ async def _execute_single_function_call_async(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     tool_confirmation: Optional[ToolConfirmation] = None,
-) -> Optional[Event]:
+) -> _FunctionCallExecutionResult:
   """Execute a single function call with thread safety for state modifications."""
 
   async def _run_on_tool_error_callbacks(
@@ -491,8 +520,12 @@ async def _execute_single_function_call_async(
         error=tool_error,
     )
     if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
+      return _FunctionCallExecutionResult(
+          event=__build_response_event(
+              tool, error_response, tool_context, invocation_context
+          ),
+          should_pause=False,
+          function_call_id=function_call.id,
       )
     else:
       raise tool_error
@@ -569,11 +602,17 @@ async def _execute_single_function_call_async(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
+    should_pause = _should_pause_after_execution(tool, function_response)
+
+    if should_pause:
       # Allow long-running function to return None to not provide function
       # response.
       if not function_response:
-        return None
+        return _FunctionCallExecutionResult(
+            event=None,
+            should_pause=True,
+            function_call_id=function_call.id,
+        )
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -583,14 +622,19 @@ async def _execute_single_function_call_async(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    return function_response_event
+    return _FunctionCallExecutionResult(
+        event=function_response_event,
+        should_pause=should_pause,
+        function_call_id=function_call.id,
+    )
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
     function_response_event = None
     caught_error = None
     try:
-      function_response_event = await _run_with_trace()
-      return function_response_event
+      execution_result = await _run_with_trace()
+      function_response_event = execution_result.event
+      return execution_result
     except Exception as e:
       caught_error = e
       raise
@@ -635,11 +679,21 @@ async def handle_function_calls_live(
   ]
 
   # Wait for all tasks to complete
-  function_response_events = await asyncio.gather(*tasks)
+  execution_results = await asyncio.gather(*tasks)
+
+  long_running_tool_ids = {
+      result.function_call_id
+      for result in execution_results
+      if result.should_pause
+  }
+  if long_running_tool_ids:
+    if function_call_event.long_running_tool_ids is None:
+      function_call_event.long_running_tool_ids = set()
+    function_call_event.long_running_tool_ids.update(long_running_tool_ids)
 
   # Filter out None results
   function_response_events = [
-      event for event in function_response_events if event is not None
+      result.event for result in execution_results if result.event is not None
   ]
 
   if not function_response_events:
@@ -666,7 +720,7 @@ async def _execute_single_function_call_live(
     tools_dict: dict[str, BaseTool],
     agent: LlmAgent,
     streaming_lock: asyncio.Lock,
-) -> Optional[Event]:
+) -> _FunctionCallExecutionResult:
   """Execute a single function call for live mode with thread safety."""
 
   async def _run_on_tool_error_callbacks(
@@ -722,8 +776,12 @@ async def _execute_single_function_call_live(
         error=tool_error,
     )
     if error_response is not None:
-      return __build_response_event(
-          tool, error_response, tool_context, invocation_context
+      return _FunctionCallExecutionResult(
+          event=__build_response_event(
+              tool, error_response, tool_context, invocation_context
+          ),
+          should_pause=False,
+          function_call_id=function_call.id,
       )
     raise tool_error
 
@@ -809,10 +867,16 @@ async def _execute_single_function_call_live(
     if altered_function_response is not None:
       function_response = altered_function_response
 
-    if tool.is_long_running:
+    should_pause = _should_pause_after_execution(tool, function_response)
+
+    if should_pause:
       # Allow async function to return None to not provide function response.
       if not function_response:
-        return None
+        return _FunctionCallExecutionResult(
+            event=None,
+            should_pause=True,
+            function_call_id=function_call.id,
+        )
 
     # Note: State deltas are not applied here - they are collected in
     # tool_context.actions.state_delta and applied later when the session
@@ -822,14 +886,19 @@ async def _execute_single_function_call_live(
     function_response_event = __build_response_event(
         tool, function_response, tool_context, invocation_context
     )
-    return function_response_event
+    return _FunctionCallExecutionResult(
+        event=function_response_event,
+        should_pause=should_pause,
+        function_call_id=function_call.id,
+    )
 
   with tracer.start_as_current_span(f'execute_tool {tool.name}'):
     function_response_event = None
     caught_error = None
     try:
-      function_response_event = await _run_with_trace()
-      return function_response_event
+      execution_result = await _run_with_trace()
+      function_response_event = execution_result.event
+      return execution_result
     except Exception as e:
       caught_error = e
       raise

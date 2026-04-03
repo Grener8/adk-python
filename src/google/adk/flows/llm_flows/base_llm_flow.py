@@ -75,7 +75,6 @@ DEFAULT_ENABLE_CACHE_STATISTICS = False
 
 
 def _finalize_model_response_event(
-    llm_request: LlmRequest,
     llm_response: LlmResponse,
     model_response_event: Event,
 ) -> Event:
@@ -85,7 +84,6 @@ def _finalize_model_response_event(
   populates function call IDs and long-running tool information.
 
   Args:
-    llm_request: The original LLM request.
     llm_response: The LLM response from the model.
     model_response_event: The base event to populate.
 
@@ -101,11 +99,6 @@ def _finalize_model_response_event(
     function_calls = finalized_event.get_function_calls()
     if function_calls:
       functions.populate_client_function_call_id(finalized_event)
-      finalized_event.long_running_tool_ids = (
-          functions.get_long_running_function_calls(
-              function_calls, llm_request.tools_dict
-          )
-      )
 
   return finalized_event
 
@@ -926,7 +919,7 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_response, model_response_event
     )
     yield model_response_event
 
@@ -1022,7 +1015,7 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_response, model_response_event
     )
     yield model_response_event
 
@@ -1217,12 +1210,11 @@ class BaseLlmFlow(ABC):
 
   def _finalize_model_response_event(
       self,
-      llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
   ) -> Event:
     return _finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_response, model_response_event
     )
 
   async def _resolve_toolset_auth(
