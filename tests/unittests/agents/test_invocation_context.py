@@ -273,6 +273,50 @@ class TestInvocationContextWithAppResumablity:
         [function_call_event, function_response_event]
     )
 
+  def test_long_running_calls_fully_resolved_in_sequence(self):
+    """Tests unresolved state clears once all long-running ids are responded."""
+    invocation_context = self._create_test_invocation_context(
+        ResumabilityConfig(is_resumable=True)
+    )
+
+    fc_1 = Part.from_function_call(name='tool_a', args={})
+    fc_1.function_call.id = 'tool_call_id_1'
+    fc_2 = Part.from_function_call(name='tool_b', args={})
+    fc_2.function_call.id = 'tool_call_id_2'
+    function_call_event = Event(
+        invocation_id='inv_1',
+        author='agent',
+        content=testing_utils.ModelContent([fc_1, fc_2]),
+        long_running_tool_ids={'tool_call_id_1', 'tool_call_id_2'},
+    )
+
+    fr_1 = Part.from_function_response(name='tool_a', response={'result': 'ok'})
+    fr_1.function_response.id = 'tool_call_id_1'
+    function_response_event_1 = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[fr_1]),
+    )
+
+    fr_2 = Part.from_function_response(name='tool_b', response={'result': 'ok'})
+    fr_2.function_response.id = 'tool_call_id_2'
+    function_response_event_2 = Event(
+        invocation_id='inv_1',
+        author='user',
+        content=Content(role='user', parts=[fr_2]),
+    )
+
+    assert invocation_context.has_unresolved_long_running_tool_calls(
+        [function_call_event, function_response_event_1]
+    )
+    assert not invocation_context.has_unresolved_long_running_tool_calls(
+        [
+            function_call_event,
+            function_response_event_1,
+            function_response_event_2,
+        ]
+    )
+
   def test_is_resumable_true(self):
     """Tests that is_resumable is True when resumability is enabled."""
     invocation_context = self._create_test_invocation_context(

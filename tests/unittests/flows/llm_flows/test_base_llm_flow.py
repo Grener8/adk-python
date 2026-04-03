@@ -525,3 +525,39 @@ def test_finalize_model_response_event_preserves_streaming_function_call_ids():
   assert len(function_calls) == 2
   assert function_calls[0].id == 'stable_id_1'
   assert function_calls[1].id == 'stable_id_2'
+
+
+def test_finalize_model_response_event_warns_on_mismatched_fc_counts(caplog):
+  """Tests warning is logged when streamed partial/final FC counts mismatch."""
+  previous_event = Event(
+      invocation_id='inv_1',
+      author='test_agent',
+      content=types.Content(
+          role='model',
+          parts=[
+              types.Part.from_function_call(name='tool_a', args={'x': 1}),
+              types.Part.from_function_call(name='tool_b', args={'y': 2}),
+          ],
+      ),
+      partial=True,
+  )
+  previous_event.content.parts[0].function_call.id = 'stable_id_1'
+  previous_event.content.parts[1].function_call.id = 'stable_id_2'
+
+  llm_response = LlmResponse(
+      content=types.Content(
+          role='model',
+          parts=[types.Part.from_function_call(name='tool_a', args={'x': 1})],
+      ),
+      partial=False,
+  )
+
+  with caplog.at_level('WARNING'):
+    finalized_event = _finalize_model_response_event(
+        LlmRequest(), llm_response, previous_event
+    )
+
+  assert 'Mismatched function call counts' in caplog.text
+  function_calls = finalized_event.get_function_calls()
+  assert len(function_calls) == 1
+  assert function_calls[0].id == 'stable_id_1'
