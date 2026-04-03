@@ -590,10 +590,19 @@ async def _execute_single_function_call_async(
     # to pause.  If the callable returns True, tag the function_response_event
     # with the function call id so that the caller can propagate the pause
     # decision back to the model-response event.
-    if callable(tool.is_long_running) and tool.is_long_running(
-        function_response
-    ):
-      function_response_event.long_running_tool_ids = {function_call.id}
+    if callable(tool.is_long_running):
+      try:
+        should_pause = tool.is_long_running(function_response)
+      except Exception:  # pylint: disable=broad-except
+        logger.warning(
+            'is_long_running callable raised an exception for tool %s;'
+            ' treating as no pause.',
+            tool.name,
+            exc_info=True,
+        )
+        should_pause = False
+      if should_pause:
+        function_response_event.long_running_tool_ids = {function_call.id}
 
     return function_response_event
 
