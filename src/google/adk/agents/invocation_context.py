@@ -402,8 +402,8 @@ class InvocationContext(BaseModel):
     """Returns whether the event history still has unresolved long-running calls.
 
     A long-running call is unresolved if its function call id appears in any
-    event.long_running_tool_ids but no function response in the same event
-    history has a matching id.
+    event.long_running_tool_ids but no user-provided function response in the
+    same event history has a matching id.
 
     Args:
       events: Optional pre-filtered event list. If omitted, current invocation
@@ -424,6 +424,7 @@ class InvocationContext(BaseModel):
     function_response_ids = {
         function_response.id
         for event in events
+        if event.author == 'user'
         for function_response in event.get_function_responses()
         if function_response.id
     }

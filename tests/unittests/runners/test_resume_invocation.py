@@ -18,7 +18,9 @@ import copy
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.apps.app import App
 from google.adk.apps.app import ResumabilityConfig
+from google.adk.events.event import Event
 from google.adk.tools.long_running_tool import LongRunningFunctionTool
+from google.genai.types import Content
 from google.genai.types import FunctionResponse
 from google.genai.types import Part
 import pytest
@@ -250,5 +252,69 @@ async def test_resume_any_invocation():
           root_agent.name,
           "llm response after resuming invocation 1",
       ),
+      (root_agent.name, testing_utils.END_OF_AGENT),
+  ]
+
+
+@pytest.mark.asyncio
+async def test_resume_invocation_with_intervening_event_after_long_running_call():
+  """Resuming continues when response id resolves earlier paused long-running id."""
+  long_running_test_tool = LongRunningFunctionTool(
+      func=test_tool,
+  )
+  root_agent = LlmAgent(
+      name="root_agent",
+      model=testing_utils.MockModel.create(
+          responses=[
+              Part.from_function_call(name="test_tool", args={}),
+              "llm response after resume",
+          ]
+      ),
+      tools=[long_running_test_tool],
+  )
+  runner = testing_utils.InMemoryRunner(
+      app=App(
+          name="test_app",
+          root_agent=root_agent,
+          resumability_config=ResumabilityConfig(is_resumable=True),
+      )
+  )
+
+  invocation_events = await runner.run_async("test user query")
+  invocation_id = invocation_events[0].invocation_id
+  function_call_id = invocation_events[0].content.parts[0].function_call.id
+
+  session = await runner.runner.session_service.get_session(
+      app_name="test_app", user_id="test_user", session_id=runner.session_id
+  )
+  await runner.runner.session_service.append_event(
+      session=session,
+      event=Event(
+          author="root_agent",
+          invocation_id=invocation_id,
+          content=Content(
+              role="model",
+              parts=[Part.from_text(text="intervening model text")],
+          ),
+      ),
+  )
+
+  resumed_events = await runner.run_async(
+      invocation_id=invocation_id,
+      new_message=testing_utils.UserContent(
+          Part(
+              function_response=FunctionResponse(
+                  id=function_call_id,
+                  name="test_tool",
+                  response={"result": "updated"},
+              )
+          )
+      ),
+  )
+
+  assert testing_utils.simplify_resumable_app_events(
+      copy.deepcopy(resumed_events)
+  ) == [
+      (root_agent.name, "llm response after resume"),
       (root_agent.name, testing_utils.END_OF_AGENT),
   ]
