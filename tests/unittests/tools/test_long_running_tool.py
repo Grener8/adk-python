@@ -66,7 +66,9 @@ class TestLongRunningFunctionTool:
 
   def test_is_long_running_callable(self):
     """Test that is_long_running supports callable predicates."""
-    predicate = lambda result: result == {"status": "pending"}
+    def predicate(result):
+      return result == {'status': 'pending'}
+
     tool = LongRunningFunctionTool(
         sample_long_running_function, is_long_running=predicate
     )

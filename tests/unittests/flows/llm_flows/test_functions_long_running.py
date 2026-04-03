@@ -255,7 +255,7 @@ def test_callable_long_running_pauses_only_for_selected_results():
   mockModel = testing_utils.MockModel.create(responses=responses)
   function_called = 0
 
-  def submit(attempt: int, tool_context: ToolContext) -> dict[str, str]:
+  def mock_submit(attempt: int, tool_context: ToolContext) -> dict[str, str]:
     nonlocal function_called
     function_called += 1
     if attempt == 1:
@@ -263,7 +263,7 @@ def test_callable_long_running_pauses_only_for_selected_results():
     return {'status': 'pending_confirmation'}
 
   tool = LongRunningFunctionTool(
-      func=submit,
+      func=mock_submit,
       is_long_running=lambda result: (
           isinstance(result, dict)
           and result.get('status') == 'pending_confirmation'

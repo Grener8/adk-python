@@ -233,6 +233,16 @@ def get_long_running_function_calls(
 
 
 class _FunctionCallExecutionResult(NamedTuple):
+  """Result of one function call execution.
+
+  Attributes:
+    event: The generated function response event. None when a long-running tool
+      should pause and intentionally returns no immediate response payload.
+    should_pause: Whether this function call should mark the originating
+      function call event as long-running.
+    function_call_id: The ID of the originating function call.
+  """
+
   event: Optional[Event]
   should_pause: bool
   function_call_id: str
