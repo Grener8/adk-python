@@ -78,6 +78,7 @@ def _finalize_model_response_event(
     llm_request: LlmRequest,
     llm_response: LlmResponse,
     model_response_event: Event,
+    existing_fc_ids: Optional[dict[str, str]] = None,
 ) -> Event:
   """Finalize and build the model response event from LLM response.
 
@@ -88,6 +89,9 @@ def _finalize_model_response_event(
     llm_request: The original LLM request.
     llm_response: The LLM response from the model.
     model_response_event: The base event to populate.
+    existing_fc_ids: Optional mapping of function call name to previously
+      assigned ID. Used to preserve stable IDs across streaming chunks of the
+      same logical LLM response.
 
   Returns:
     The finalized Event with LLM response data merged in.
@@ -100,6 +104,11 @@ def _finalize_model_response_event(
   if finalized_event.content:
     function_calls = finalized_event.get_function_calls()
     if function_calls:
+      # Restore IDs from prior streaming chunks to keep them stable.
+      if existing_fc_ids:
+        for fc in function_calls:
+          if fc.name in existing_fc_ids and not fc.id:
+            fc.id = existing_fc_ids[fc.name]
       functions.populate_client_function_call_id(finalized_event)
       finalized_event.long_running_tool_ids = (
           functions.get_long_running_function_calls(
@@ -796,21 +805,10 @@ class BaseLlmFlow(ABC):
     )
 
     # Long running tool calls should have been handled before this point.
-    # If there are still long running tool calls, it means the agent is paused
-    # before, and its branch hasn't been resumed yet.
-    if (
-        invocation_context.is_resumable
-        and events
-        and len(events) > 1
-        # TODO: here we are using the last 2 events to decide whether to pause
-        # the invocation. But this is just being optimistic, we should find a
-        # way to pause when the long running tool call is followed by more than
-        # one text responses.
-        and (
-            invocation_context.should_pause_invocation(events[-1])
-            or invocation_context.should_pause_invocation(events[-2])
-        )
-    ):
+    # If there are still unresolved long running tool calls in the current
+    # invocation, it means the agent is paused and its branch hasn't been
+    # fully resumed yet.
+    if invocation_context.has_unresolved_long_running_calls():
       return
 
     if (
@@ -836,6 +834,9 @@ class BaseLlmFlow(ABC):
         author=invocation_context.agent.name,
         branch=invocation_context.branch,
     )
+    # Tracks function call IDs assigned to partial events so that the final
+    # event in the same streaming response reuses the same IDs.
+    last_fc_ids: dict[str, str] = {}
     async with Aclosing(
         self._call_llm_async(
             invocation_context, llm_request, model_response_event
@@ -849,9 +850,18 @@ class BaseLlmFlow(ABC):
                 llm_request,
                 llm_response,
                 model_response_event,
+                last_fc_ids or None,
             )
         ) as agen:
           async for event in agen:
+            # Capture function call IDs assigned in this chunk so subsequent
+            # chunks of the same streaming response reuse the same IDs.
+            if event.get_function_calls():
+              last_fc_ids = {
+                  fc.name: fc.id
+                  for fc in event.get_function_calls()
+                  if fc.id
+              }
             # Update the mutable event id to avoid conflict
             model_response_event.id = Event.new_id()
             model_response_event.timestamp = platform_time.get_time()
@@ -895,6 +905,7 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      existing_fc_ids: Optional[dict[str, str]] = None,
   ) -> AsyncGenerator[Event, None]:
     """Postprocess after calling the LLM.
 
@@ -903,6 +914,8 @@ class BaseLlmFlow(ABC):
       llm_request: The original LLM request.
       llm_response: The LLM response from the LLM call.
       model_response_event: A mutable event for the LLM response.
+      existing_fc_ids: Optional mapping of function call name to previously
+        assigned ID. Used to preserve stable IDs across streaming chunks.
 
     Yields:
       A generator of events.
@@ -926,7 +939,7 @@ class BaseLlmFlow(ABC):
 
     # Builds the event.
     model_response_event = self._finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event, existing_fc_ids
     )
     yield model_response_event
 
@@ -1220,9 +1233,10 @@ class BaseLlmFlow(ABC):
       llm_request: LlmRequest,
       llm_response: LlmResponse,
       model_response_event: Event,
+      existing_fc_ids: Optional[dict[str, str]] = None,
   ) -> Event:
     return _finalize_model_response_event(
-        llm_request, llm_response, model_response_event
+        llm_request, llm_response, model_response_event, existing_fc_ids
     )
 
   async def _resolve_toolset_auth(

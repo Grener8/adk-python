@@ -396,6 +396,39 @@ class InvocationContext(BaseModel):
 
     return False
 
+  def has_unresolved_long_running_calls(self) -> bool:
+    """Returns True if the current invocation has unresolved long-running calls.
+
+    A long-running tool call is considered resolved when a user-provided
+    function response with a matching ID has been added to the current
+    invocation. System-generated responses (authored by agents) are treated
+    as intermediate/pending and do not resolve the pause.
+
+    Returns:
+      True if any long-running tool call in the current invocation has not
+      yet been resolved by a user-provided function response.
+    """
+    if not self.is_resumable:
+      return False
+
+    events = self._get_events(current_invocation=True, current_branch=True)
+
+    # Collect IDs from function responses provided by the user (not
+    # system-generated). Only user-authored responses resolve a long-running
+    # call because system responses are intermediate (e.g. pending status).
+    user_response_ids = {
+        fr.id
+        for evt in events
+        if evt.author == 'user'
+        for fr in evt.get_function_responses()
+        if fr.id
+    }
+
+    return any(
+        (evt.long_running_tool_ids or set()) - user_response_ids
+        for evt in events
+    )
+
   # TODO: Move this method from invocation_context to a dedicated module.
   def _find_matching_function_call(
       self, function_response_event: Event
